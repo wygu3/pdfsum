@@ -21,8 +21,14 @@ try:
 except ImportError:
     st.warning("python-dotenv not installed. Using environment variables directly.")
 
-# Get API key from environment variable
-api_key = os.getenv("OPENAI_API_KEY")
+# Get API key from environment variable or Streamlit secrets
+api_key = None
+# Check Streamlit secrets first
+if hasattr(st, "secrets") and "openai" in st.secrets:
+    api_key = st.secrets["openai"]["api_key"]
+else:
+    # Fall back to environment variable
+    api_key = os.getenv("OPENAI_API_KEY")
 
 # Initialize session state variables if they don't exist
 if 'api_key' not in st.session_state:
@@ -100,9 +106,12 @@ def summarize_text(text, api_key, images=None, include_visual=False):
     if not api_key:
         return "Error: API key not provided"
     
-    client = openai.OpenAI(api_key=api_key)
-    
     try:
+        # Initialize OpenAI client in a more compatible way
+        client = openai.OpenAI(
+            api_key=api_key,
+        )
+        
         # Truncate text if it's too long
         max_chars = 15000
         if len(text) > max_chars:
@@ -110,55 +119,66 @@ def summarize_text(text, api_key, images=None, include_visual=False):
         
         # If visual analysis is enabled and images are provided
         if include_visual and images and len(images) > 0:
-            # Use GPT-4 Vision model
-            messages = [
-                {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents including both text and visual elements."}
-            ]
-            
-            # Add text content
-            messages.append({
-                "role": "user", 
-                "content": [
-                    {"type": "text", "text": f"Please provide a comprehensive summary of this document, including analysis of both text content and visual elements like charts, tables, or diagrams. Text content:\n\n{text}"}
+            try:
+                # Use GPT-4 Vision model
+                messages = [
+                    {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents including both text and visual elements."}
                 ]
-            })
-            
-            # Add images content with page numbers
-            for img in images:
-                img_base64 = image_to_base64(img["path"])
+                
+                # Add text content
                 messages.append({
-                    "role": "user",
+                    "role": "user", 
                     "content": [
-                        {"type": "text", "text": f"This is page {img['page']} of the document:"},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{img_base64}"
-                            }
-                        }
+                        {"type": "text", "text": f"Please provide a comprehensive summary of this document, including analysis of both text content and visual elements like charts, tables, or diagrams. Text content:\n\n{text}"}
                     ]
                 })
-            
-            # Final instruction
-            messages.append({
-                "role": "user",
-                "content": "Analyze both the text and images to create a comprehensive summary. Include descriptions of any important visual elements like charts, diagrams, or tables, and explain how they relate to the text content."
-            })
-            
-            # Call the API with vision capabilities
-            response = client.chat.completions.create(
-                model="gpt-4-vision-preview",  # or gpt-4o if available
-                messages=messages,
-                max_tokens=800
-            )
-            
-            # Clean up temporary image files
-            for img in images:
-                try:
-                    os.remove(img["path"])
-                except:
-                    pass
                 
+                # Add images content with page numbers
+                for img in images:
+                    img_base64 = image_to_base64(img["path"])
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"This is page {img['page']} of the document:"},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            }
+                        ]
+                    })
+                
+                # Final instruction
+                messages.append({
+                    "role": "user",
+                    "content": "Analyze both the text and images to create a comprehensive summary. Include descriptions of any important visual elements like charts, diagrams, or tables, and explain how they relate to the text content."
+                })
+                
+                # Call the API with vision capabilities
+                response = client.chat.completions.create(
+                    model="gpt-4-vision-preview",  # or gpt-4o if available
+                    messages=messages,
+                    max_tokens=800
+                )
+                
+                # Clean up temporary image files
+                for img in images:
+                    try:
+                        os.remove(img["path"])
+                    except:
+                        pass
+            except Exception as e:
+                # Fall back to text-only summary if vision fails
+                st.warning(f"Visual analysis failed: {str(e)}. Falling back to text-only summary.")
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents."},
+                        {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
+                    ],
+                    max_tokens=500
+                )
         else:
             # Standard text-only summary
             response = client.chat.completions.create(
@@ -272,7 +292,11 @@ if uploaded_files and st.button("Summarize PDFs"):
             if st.session_state.include_visual_analysis:
                 uploaded_file.seek(0)  # Reset file pointer
                 status_text.text(f"Extracting images from {uploaded_file.name}...")
-                images = extract_images_from_pdf(uploaded_file)
+                try:
+                    images = extract_images_from_pdf(uploaded_file)
+                except Exception as e:
+                    st.warning(f"Failed to extract images: {str(e)}. Continuing with text-only summarization.")
+                    images = None
             
             # Summarize text (and images if enabled)
             status_text.text(f"Generating summary for {uploaded_file.name}...")
