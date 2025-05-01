@@ -107,10 +107,8 @@ def summarize_text(text, api_key, images=None, include_visual=False):
         return "Error: API key not provided"
     
     try:
-        # Initialize OpenAI client in a more compatible way
-        client = openai.OpenAI(
-            api_key=api_key,
-        )
+        # Simple initialization with only the API key
+        client = openai.OpenAI(api_key=api_key)
         
         # Truncate text if it's too long
         max_chars = 15000
