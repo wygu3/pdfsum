@@ -8,6 +8,11 @@ import openai
 from datetime import datetime
 import base64
 import db
+import fitz  # PyMuPDF
+import io
+from PIL import Image
+import tempfile
+import uuid
 
 # Check for .env file and load if exists
 try:
@@ -32,6 +37,8 @@ if 'show_delete_confirmation' not in st.session_state:
     st.session_state.show_delete_confirmation = False
 if 'summary_to_delete' not in st.session_state:
     st.session_state.summary_to_delete = None
+if 'include_visual_analysis' not in st.session_state:
+    st.session_state.include_visual_analysis = False
 
 # Function to extract text from PDF
 def extract_text_from_pdf(pdf_file):
@@ -41,27 +48,128 @@ def extract_text_from_pdf(pdf_file):
         text += pdf_reader.pages[page_num].extract_text()
     return text
 
+# Function to extract images from PDF
+def extract_images_from_pdf(pdf_file, max_images=5):
+    # Save the uploaded file to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        temp_file.write(pdf_file.read())
+        temp_path = temp_file.name
+    
+    # Reset file pointer for later use
+    pdf_file.seek(0)
+    
+    # Open the PDF with PyMuPDF
+    doc = fitz.open(temp_path)
+    images = []
+    
+    # Limit number of images to prevent token overflow
+    page_count = min(len(doc), max_images)
+    
+    for page_num in range(page_count):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(matrix=fitz.Matrix(300/72, 300/72))
+        
+        img_data = io.BytesIO(pix.tobytes("png"))
+        img = Image.open(img_data)
+        
+        # Create a unique filename
+        img_filename = f"temp_img_{uuid.uuid4()}.png"
+        img_path = os.path.join(tempfile.gettempdir(), img_filename)
+        img.save(img_path)
+        
+        images.append({
+            "path": img_path,
+            "page": page_num + 1
+        })
+    
+    # Close the document
+    doc.close()
+    
+    # Clean up the temporary file
+    os.unlink(temp_path)
+    
+    return images
+
+# Function to convert image to base64 for OpenAI API
+def image_to_base64(image_path):
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode('utf-8')
+
 # Function to summarize text using OpenAI API
-def summarize_text(text, api_key):
+def summarize_text(text, api_key, images=None, include_visual=False):
     if not api_key:
         return "Error: API key not provided"
     
     client = openai.OpenAI(api_key=api_key)
     
     try:
-        # Truncate text if it's too long (GPT-3.5-turbo has token limits)
-        max_chars = 15000  # Approximation to stay within token limits
+        # Truncate text if it's too long
+        max_chars = 15000
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
         
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents."},
-                {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
-            ],
-            max_tokens=500
-        )
+        # If visual analysis is enabled and images are provided
+        if include_visual and images and len(images) > 0:
+            # Use GPT-4 Vision model
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents including both text and visual elements."}
+            ]
+            
+            # Add text content
+            messages.append({
+                "role": "user", 
+                "content": [
+                    {"type": "text", "text": f"Please provide a comprehensive summary of this document, including analysis of both text content and visual elements like charts, tables, or diagrams. Text content:\n\n{text}"}
+                ]
+            })
+            
+            # Add images content with page numbers
+            for img in images:
+                img_base64 = image_to_base64(img["path"])
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"This is page {img['page']} of the document:"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{img_base64}"
+                            }
+                        }
+                    ]
+                })
+            
+            # Final instruction
+            messages.append({
+                "role": "user",
+                "content": "Analyze both the text and images to create a comprehensive summary. Include descriptions of any important visual elements like charts, diagrams, or tables, and explain how they relate to the text content."
+            })
+            
+            # Call the API with vision capabilities
+            response = client.chat.completions.create(
+                model="gpt-4-vision-preview",  # or gpt-4o if available
+                messages=messages,
+                max_tokens=800
+            )
+            
+            # Clean up temporary image files
+            for img in images:
+                try:
+                    os.remove(img["path"])
+                except:
+                    pass
+                
+        else:
+            # Standard text-only summary
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents."},
+                    {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
+                ],
+                max_tokens=500
+            )
+        
         return response.choices[0].message.content
     except Exception as e:
         return f"Error during API call: {str(e)}"
@@ -117,6 +225,10 @@ def update_tags(summary_id, tags):
     st.success("Tags updated successfully!")
     st.rerun()
 
+# Function to toggle visual analysis
+def toggle_visual_analysis():
+    st.session_state.include_visual_analysis = not st.session_state.include_visual_analysis
+
 # App title and description
 st.title("PDF Summarizer")
 st.write("Upload up to 100 PDFs to summarize them using AI.")
@@ -129,6 +241,12 @@ if api_key_input:
 
 # File uploader
 uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
+
+# Visual analysis toggle
+st.checkbox("Include visual analysis (uses GPT-4V for image understanding)", 
+           value=st.session_state.include_visual_analysis,
+           help="When enabled, the AI will analyze images, charts, and visual layouts in the PDF. Requires more processing time and tokens.",
+           on_change=toggle_visual_analysis)
 
 # Process files when submitted
 if uploaded_files and st.button("Summarize PDFs"):
@@ -149,8 +267,16 @@ if uploaded_files and st.button("Summarize PDFs"):
             # Extract text from PDF
             text = extract_text_from_pdf(uploaded_file)
             
-            # Summarize text
-            summary = summarize_text(text, st.session_state.api_key)
+            # If visual analysis is enabled, extract images from PDF
+            images = None
+            if st.session_state.include_visual_analysis:
+                uploaded_file.seek(0)  # Reset file pointer
+                status_text.text(f"Extracting images from {uploaded_file.name}...")
+                images = extract_images_from_pdf(uploaded_file)
+            
+            # Summarize text (and images if enabled)
+            status_text.text(f"Generating summary for {uploaded_file.name}...")
+            summary = summarize_text(text, st.session_state.api_key, images, st.session_state.include_visual_analysis)
             
             # Save summary to database
             db.save_summary_to_db(uploaded_file.name, len(text), summary)
@@ -288,12 +414,18 @@ with st.sidebar:
     st.write("Upload one or more PDFs (up to 100) and get AI-generated summaries.")
     st.write("Each summary is saved to a local database and can be exported as a text file.")
     
+    if st.session_state.include_visual_analysis:
+        st.subheader("Visual Analysis Enabled")
+        st.write("The app will analyze images and visual elements in your PDFs using GPT-4V.")
+        st.write("This provides more comprehensive summaries but uses more tokens.")
+    
     st.subheader("Instructions")
     st.write("1. Enter your OpenAI API key")
     st.write("2. Upload PDF files (up to 100)")
-    st.write("3. Click 'Summarize PDFs'")
-    st.write("4. View and download the summaries")
-    st.write("5. Sort, filter, and tag your summaries")
+    st.write("3. Enable visual analysis if needed")
+    st.write("4. Click 'Summarize PDFs'")
+    st.write("5. View and download the summaries")
+    st.write("6. Sort, filter, and tag your summaries")
     
     st.subheader("Stats")
     all_summaries = db.get_all_summaries()

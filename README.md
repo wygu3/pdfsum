@@ -6,6 +6,7 @@ A Python application that allows you to upload multiple PDF files (up to 100) an
 
 - Upload up to 100 PDF files
 - Summarize PDFs using OpenAI's GPT API
+- **Visual analysis** of PDF charts, diagrams, and layouts using GPT-4V
 - Save summaries with timestamps to a persistent SQLite database
 - Search for summaries by filename, content, or tags
 - Sort summaries by date, filename, PDF size, or ID
@@ -20,6 +21,8 @@ A Python application that allows you to upload multiple PDF files (up to 100) an
 - Python 3.7+
 - Streamlit
 - PyPDF2
+- PyMuPDF (for image extraction)
+- Pillow (for image processing)
 - OpenAI API key
 - SQLite (included in Python standard library)
 
@@ -52,11 +55,13 @@ A Python application that allows you to upload multiple PDF files (up to 100) an
 
 4. Upload one or more PDF files using the file uploader
 
-5. Click "Summarize PDFs" to process the files
+5. **Optional**: Enable visual analysis to analyze images, charts, and diagrams in PDFs
 
-6. View the summaries and download them as text files
+6. Click "Summarize PDFs" to process the files
 
-7. Manage your summaries:
+7. View the summaries and download them as text files
+
+8. Manage your summaries:
    - Search for specific summaries using the search box
    - Sort summaries by date, filename, size, or ID
    - Add tags to categorize your summaries
@@ -64,6 +69,21 @@ A Python application that allows you to upload multiple PDF files (up to 100) an
    - Delete individual summaries
    - Export all summaries as a single text file
    - Clear all summaries from the database
+
+## Visual Analysis
+
+When enabled, the app will:
+- Extract images from your PDFs (up to 5 pages per document)
+- Send both text and images to OpenAI's GPT-4V model
+- Generate comprehensive summaries that include analysis of:
+  - Charts and graphs
+  - Tables and data visualizations
+  - Diagrams and illustrations
+  - Document layout and structure
+
+This provides a more complete understanding of your documents, especially for PDFs with important visual elements or complex layouts.
+
+**Note**: Visual analysis uses the more advanced GPT-4V model, which requires more tokens and processing time than standard text summarization.
 
 ## File Management Features
 
@@ -78,7 +98,7 @@ The app uses a SQLite database (`summaries.db`) to persistently store your summa
 
 ## Notes
 
-- The app uses OpenAI's GPT-3.5-turbo model for summarization
+- The app uses OpenAI's GPT-3.5-turbo model for text summarization and GPT-4V for visual analysis
 - Large PDFs are truncated to fit within token limits
 - For very large PDFs, processing might take some time
 - Summaries are stored in a local SQLite database for persistence between sessions
