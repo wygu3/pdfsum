@@ -107,8 +107,11 @@ def summarize_text(text, api_key, images=None, include_visual=False):
         return "Error: API key not provided"
     
     try:
-        # Simple initialization with only the API key
-        client = openai.OpenAI(api_key=api_key)
+        # Import specific OpenAI client version
+        from openai import OpenAI
+        
+        # Create client with minimal parameters
+        client = OpenAI(api_key=api_key)
         
         # Truncate text if it's too long
         max_chars = 15000
@@ -155,7 +158,7 @@ def summarize_text(text, api_key, images=None, include_visual=False):
                 
                 # Call the API with vision capabilities
                 response = client.chat.completions.create(
-                    model="gpt-4-vision-preview",  # or gpt-4o if available
+                    model="gpt-4-vision-preview",
                     messages=messages,
                     max_tokens=800
                 )
@@ -190,6 +193,9 @@ def summarize_text(text, api_key, images=None, include_visual=False):
         
         return response.choices[0].message.content
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        st.error(f"Full error: {error_details}")
         return f"Error during API call: {str(e)}"
 
 # Function to create a downloadable link for text
