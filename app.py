@@ -30,6 +30,50 @@ else:
     # Fall back to environment variable
     api_key = os.getenv("OPENAI_API_KEY")
 
+# Define summary style presets
+SUMMARY_PRESETS = {
+    "concise": {
+        "name": "Concise",
+        "description": "A brief summary with core points only",
+        "format": "paragraph",
+        "length": "short",
+        "max_tokens": 300,
+        "system_prompt": "Create a concise summary focusing only on the most essential points."
+    },
+    "comprehensive": {
+        "name": "Comprehensive",
+        "description": "A detailed summary covering all main points",
+        "format": "paragraph",
+        "length": "medium",
+        "max_tokens": 600,
+        "system_prompt": "Create a comprehensive summary that covers all the main points in the document."
+    },
+    "executive": {
+        "name": "Executive Summary",
+        "description": "Business-focused with context and implications",
+        "format": "paragraph",
+        "length": "medium",
+        "max_tokens": 500,
+        "system_prompt": "Create an executive summary focusing on key business implications and strategic insights."
+    },
+    "bullet_points": {
+        "name": "Bullet Points",
+        "description": "Key takeaways in bullet point format",
+        "format": "bullets",
+        "length": "medium",
+        "max_tokens": 500,
+        "system_prompt": "Create a summary with key points in bullet point format."
+    },
+    "academic": {
+        "name": "Academic",
+        "description": "Formal analysis with citations if available",
+        "format": "structured",
+        "length": "long",
+        "max_tokens": 800,
+        "system_prompt": "Create a formal academic summary with analysis of methodology and findings."
+    }
+}
+
 # Initialize session state variables if they don't exist
 if 'api_key' not in st.session_state:
     st.session_state.api_key = api_key
@@ -45,6 +89,20 @@ if 'summary_to_delete' not in st.session_state:
     st.session_state.summary_to_delete = None
 if 'include_visual_analysis' not in st.session_state:
     st.session_state.include_visual_analysis = False
+if 'custom_instructions' not in st.session_state:
+    st.session_state.custom_instructions = "Create a comprehensive summary covering main points and key details. Use a clear, concise style."
+if 'current_batch_id' not in st.session_state:
+    st.session_state.current_batch_id = 1
+if 'show_create_batch' not in st.session_state:
+    st.session_state.show_create_batch = False
+if 'show_edit_batch' not in st.session_state:
+    st.session_state.show_edit_batch = False
+if 'batch_to_edit' not in st.session_state:
+    st.session_state.batch_to_edit = None
+if 'show_move_summary' not in st.session_state:
+    st.session_state.show_move_summary = False
+if 'summary_to_move' not in st.session_state:
+    st.session_state.summary_to_move = None
 
 # Function to extract text from PDF
 def extract_text_from_pdf(pdf_file):
@@ -101,8 +159,48 @@ def image_to_base64(image_path):
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode('utf-8')
 
+# Function to get system prompt based on style and format
+def get_system_prompt(style, custom_format=None, custom_length=None):
+    preset = SUMMARY_PRESETS.get(style, SUMMARY_PRESETS["comprehensive"])
+    
+    # Start with the preset system prompt
+    prompt = preset["system_prompt"]
+    
+    # If custom format is specified, add formatting instructions
+    if custom_format == "paragraph":
+        prompt += " Format as coherent paragraphs."
+    elif custom_format == "bullets":
+        prompt += " Format as a series of bullet points for each key insight."
+    elif custom_format == "outline":
+        prompt += " Format as a hierarchical outline with main points and sub-points."
+    
+    # If custom length is specified, add length instructions
+    if custom_length == "short":
+        prompt += " Keep it very concise, focusing only on the most critical information."
+    elif custom_length == "medium":
+        prompt += " Provide a balanced summary with key details and context."
+    elif custom_length == "long":
+        prompt += " Create a comprehensive summary with detailed explanations and context."
+    
+    return prompt
+
+# Function to get max tokens based on style and length
+def get_max_tokens(style, custom_length=None):
+    preset = SUMMARY_PRESETS.get(style, SUMMARY_PRESETS["comprehensive"])
+    base_tokens = preset["max_tokens"]
+    
+    # Adjust based on custom length if specified
+    if custom_length == "short":
+        return min(300, base_tokens)
+    elif custom_length == "medium":
+        return base_tokens
+    elif custom_length == "long":
+        return max(800, base_tokens)
+    
+    return base_tokens
+
 # Function to summarize text using OpenAI API
-def summarize_text(text, api_key, images=None, include_visual=False):
+def summarize_text(text, api_key, images=None, include_visual=False, custom_instructions=None):
     if not api_key:
         return "Error: API key not provided"
     
@@ -118,19 +216,25 @@ def summarize_text(text, api_key, images=None, include_visual=False):
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
         
+        # Use custom instructions or default prompt
+        system_prompt = custom_instructions or "Create a comprehensive summary covering main points and key details."
+        
+        # Default max tokens
+        max_tokens = 600
+        
         # If visual analysis is enabled and images are provided
         if include_visual and images and len(images) > 0:
             try:
-                # Use GPT-4 Vision model
+                # Use GPT-4o model with vision capabilities
                 messages = [
-                    {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents including both text and visual elements."}
+                    {"role": "system", "content": f"{system_prompt} For documents with visuals, integrate visual information naturally into the summary rather than separately describing images. Use the visual elements to enhance understanding of concepts, data, and context."}
                 ]
                 
                 # Add text content
                 messages.append({
                     "role": "user", 
                     "content": [
-                        {"type": "text", "text": f"Please provide a comprehensive summary of this document, including analysis of both text content and visual elements like charts, tables, or diagrams. Text content:\n\n{text}"}
+                        {"type": "text", "text": f"Please create a summary of this document, treating visual elements as an integral part of the content. Do not describe images separately, but use them to enhance your understanding of the document. The text content is:\n\n{text}"}
                     ]
                 })
                 
@@ -140,7 +244,7 @@ def summarize_text(text, api_key, images=None, include_visual=False):
                     messages.append({
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": f"This is page {img['page']} of the document:"},
+                            {"type": "text", "text": f"Page {img['page']} visual:"},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -153,14 +257,14 @@ def summarize_text(text, api_key, images=None, include_visual=False):
                 # Final instruction
                 messages.append({
                     "role": "user",
-                    "content": "Analyze both the text and images to create a comprehensive summary. Include descriptions of any important visual elements like charts, diagrams, or tables, and explain how they relate to the text content."
+                    "content": "Now, provide a summary that naturally integrates insights from both the text and visuals. Do not separately describe the images - instead, use them to enhance your understanding and create a more informed and contextual summary."
                 })
                 
                 # Call the API with vision capabilities
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=messages,
-                    max_tokens=800
+                    max_tokens=max_tokens
                 )
                 
                 # Clean up temporary image files
@@ -175,20 +279,20 @@ def summarize_text(text, api_key, images=None, include_visual=False):
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents."},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
                     ],
-                    max_tokens=500
+                    max_tokens=max_tokens
                 )
         else:
             # Standard text-only summary
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that summarizes PDF documents."},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
                 ],
-                max_tokens=500
+                max_tokens=max_tokens
             )
         
         return response.choices[0].message.content
@@ -253,6 +357,34 @@ def update_tags(summary_id, tags):
 def toggle_visual_analysis():
     st.session_state.include_visual_analysis = not st.session_state.include_visual_analysis
 
+# Function to update custom instructions
+def update_custom_instructions(instructions):
+    st.session_state.custom_instructions = instructions
+
+# Function to update current batch
+def set_current_batch(batch_id):
+    st.session_state.current_batch_id = batch_id
+    st.rerun()
+
+# Function to toggle create batch form
+def toggle_create_batch():
+    st.session_state.show_create_batch = not st.session_state.show_create_batch
+
+# Function to toggle edit batch form
+def toggle_edit_batch(batch_id=None):
+    st.session_state.show_edit_batch = not st.session_state.show_edit_batch
+    st.session_state.batch_to_edit = batch_id
+
+# Function to show move summary dialog
+def show_move_summary_dialog(summary_id):
+    st.session_state.show_move_summary = True
+    st.session_state.summary_to_move = summary_id
+
+# Function to hide move summary dialog
+def hide_move_summary_dialog():
+    st.session_state.show_move_summary = False
+    st.session_state.summary_to_move = None
+
 # App title and description
 st.title("PDF Summarizer")
 st.write("Upload up to 100 PDFs to summarize them using AI.")
@@ -263,177 +395,384 @@ api_key_input = st.text_input("OpenAI API Key", value=st.session_state.api_key i
 if api_key_input:
     st.session_state.api_key = api_key_input
 
-# File uploader
-uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
+# Create tabs for Upload and Manage
+tab1, tab2 = st.tabs(["Upload & Summarize", "Manage Summaries"])
 
-# Visual analysis toggle
-st.checkbox("Include visual analysis (uses GPT-4V for image understanding)", 
-           value=st.session_state.include_visual_analysis,
-           help="When enabled, the AI will analyze images, charts, and visual layouts in the PDF. Requires more processing time and tokens.",
-           on_change=toggle_visual_analysis)
+with tab1:
+    # File uploader
+    uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
 
-# Process files when submitted
-if uploaded_files and st.button("Summarize PDFs"):
-    if not st.session_state.api_key:
-        st.error("Please enter your OpenAI API key")
-    else:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    # Summary customization options
+    st.subheader("Summary Options")
+    col1, col2 = st.columns([3, 1])
+
+    with col1:
+        # Custom instructions text area
+        custom_instructions = st.text_area(
+            "Custom Summary Instructions", 
+            value=st.session_state.custom_instructions,
+            height=100,
+            help="Describe how you want the document to be summarized. For example: 'Create bullet points of key takeaways', 'Write an executive summary with business implications', etc.",
+            placeholder="Example: Create a concise summary with bullet points highlighting the main arguments and key data points."
+        )
+        if custom_instructions != st.session_state.custom_instructions:
+            update_custom_instructions(custom_instructions)
+            
+        # Visual analysis toggle moved here, underneath the text box
+        st.checkbox("Include visual analysis", 
+                   value=st.session_state.include_visual_analysis,
+                   help="When enabled, the AI will analyze images, charts, and visual layouts in the PDF. Requires more processing time and tokens.",
+                   on_change=toggle_visual_analysis)
+
+    with col2:
+        # Batch selection for new summaries
+        st.subheader("Batch Selection")
+        batches = db.get_all_batches()
+        batch_options = {batch["id"]: batch["name"] for batch in batches}
+        selected_batch = st.selectbox(
+            "Save to batch",
+            options=list(batch_options.keys()),
+            format_func=lambda x: batch_options[x],
+            index=list(batch_options.keys()).index(st.session_state.current_batch_id) if st.session_state.current_batch_id in batch_options else 0
+        )
         
-        # Limit to 100 files
-        if len(uploaded_files) > 100:
-            st.warning("Maximum 100 files allowed. Processing only the first 100.")
-            uploaded_files = uploaded_files[:100]
-        
-        for i, uploaded_file in enumerate(uploaded_files):
-            status_text.text(f"Processing {uploaded_file.name} ({i+1}/{len(uploaded_files)})")
-            
-            # Extract text from PDF
-            text = extract_text_from_pdf(uploaded_file)
-            
-            # If visual analysis is enabled, extract images from PDF
-            images = None
-            if st.session_state.include_visual_analysis:
-                uploaded_file.seek(0)  # Reset file pointer
-                status_text.text(f"Extracting images from {uploaded_file.name}...")
-                try:
-                    images = extract_images_from_pdf(uploaded_file)
-                except Exception as e:
-                    st.warning(f"Failed to extract images: {str(e)}. Continuing with text-only summarization.")
-                    images = None
-            
-            # Summarize text (and images if enabled)
-            status_text.text(f"Generating summary for {uploaded_file.name}...")
-            summary = summarize_text(text, st.session_state.api_key, images, st.session_state.include_visual_analysis)
-            
-            # Save summary to database
-            db.save_summary_to_db(uploaded_file.name, len(text), summary)
-            
-            # Update progress
-            progress_bar.progress((i + 1) / len(uploaded_files))
-            
-        status_text.text("All PDFs processed!")
-        time.sleep(1)
-        status_text.empty()
-        progress_bar.empty()
-        
-        st.success(f"Successfully summarized {len(uploaded_files)} PDFs")
-        st.rerun()
-
-# Load and display summaries from database with sorting options
-st.subheader("Manage Summaries")
-
-# Search and sort controls
-col1, col2, col3 = st.columns([2, 1, 1])
-with col1:
-    search_term = st.text_input("Search summaries", value=st.session_state.search_term)
-    if search_term != st.session_state.search_term:
-        update_search(search_term)
-
-with col2:
-    sort_options = {"timestamp": "Date", "filename": "Filename", "text_length": "PDF Size", "id": "ID"}
-    sort_by = st.selectbox("Sort by", options=list(sort_options.keys()), 
-                          format_func=lambda x: sort_options[x],
-                          index=list(sort_options.keys()).index(st.session_state.sort_by))
-    if sort_by != st.session_state.sort_by:
-        set_sort(sort_by, st.session_state.sort_order)
-
-with col3:
-    sort_order = st.selectbox("Order", options=["DESC", "ASC"], 
-                             format_func=lambda x: "Newest first" if x == "DESC" else "Oldest first",
-                             index=0 if st.session_state.sort_order == "DESC" else 1)
-    if sort_order != st.session_state.sort_order:
-        set_sort(st.session_state.sort_by, sort_order)
-
-# Get summaries with sorting and filtering
-summaries = db.get_all_summaries(
-    sort_by=st.session_state.sort_by,
-    sort_order=st.session_state.sort_order,
-    search_term=st.session_state.search_term
-)
-
-# Display delete confirmation dialog if needed
-if st.session_state.show_delete_confirmation:
-    with st.container():
-        st.warning("Are you sure you want to delete this summary?")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Yes, delete it"):
-                confirm_delete()
-        with col2:
-            if st.button("Cancel"):
-                cancel_delete()
-
-# Display summaries
-if summaries:
-    st.write(f"Found {len(summaries)} summaries")
+        # Create new batch button
+        if st.button("Create New Batch"):
+            toggle_create_batch()
     
-    for item in summaries:
-        with st.expander(f"{item['filename']} - {item['timestamp']} (ID: {item['id']})"):
-            st.markdown(f"**Summary:**")
-            st.write(item['summary'])
+    # Create new batch form
+    if st.session_state.show_create_batch:
+        st.subheader("Create New Batch")
+        with st.form("create_batch_form"):
+            batch_name = st.text_input("Batch Name", placeholder="Enter a name for this batch")
+            batch_description = st.text_area("Description (optional)", placeholder="Enter a description for this batch")
             
-            # Tags
-            tags = st.text_input("Tags (separate with commas)", 
-                                value=item['tags'] if item['tags'] else "", 
-                                key=f"tags_{item['id']}")
+            submitted = st.form_submit_button("Create Batch")
+            if submitted and batch_name:
+                new_batch_id = db.create_batch(batch_name, batch_description)
+                st.session_state.current_batch_id = new_batch_id
+                st.session_state.show_create_batch = False
+                st.success(f"Created new batch: {batch_name}")
+                st.rerun()
+
+    # Process files when submitted
+    if uploaded_files and st.button("Summarize PDFs"):
+        if not st.session_state.api_key:
+            st.error("Please enter your OpenAI API key")
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            if st.button("Update Tags", key=f"update_tags_{item['id']}"):
-                update_tags(item['id'], tags)
+            # Limit to 100 files
+            if len(uploaded_files) > 100:
+                st.warning("Maximum 100 files allowed. Processing only the first 100.")
+                uploaded_files = uploaded_files[:100]
             
-            # Action buttons
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                # Download button
-                st.markdown(
-                    get_text_download_link(
-                        item['summary'], 
-                        f"{item['filename'].replace('.pdf', '')}_summary.txt", 
-                        "Download Summary"
-                    ), 
-                    unsafe_allow_html=True
+            for i, uploaded_file in enumerate(uploaded_files):
+                status_text.text(f"Processing {uploaded_file.name} ({i+1}/{len(uploaded_files)})")
+                
+                # Extract text from PDF
+                text = extract_text_from_pdf(uploaded_file)
+                
+                # If visual analysis is enabled, extract images from PDF
+                images = None
+                if st.session_state.include_visual_analysis:
+                    uploaded_file.seek(0)  # Reset file pointer
+                    status_text.text(f"Extracting images from {uploaded_file.name}...")
+                    try:
+                        images = extract_images_from_pdf(uploaded_file)
+                    except Exception as e:
+                        st.warning(f"Failed to extract images: {str(e)}. Continuing with text-only summarization.")
+                        images = None
+                
+                # Summarize text (and images if enabled)
+                status_text.text(f"Generating summary for {uploaded_file.name}...")
+                summary = summarize_text(
+                    text, 
+                    st.session_state.api_key, 
+                    images, 
+                    st.session_state.include_visual_analysis,
+                    st.session_state.custom_instructions
                 )
+                
+                # Save summary to database
+                db.save_summary_to_db(uploaded_file.name, len(text), summary, "", selected_batch)
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(uploaded_files))
+                
+            status_text.text("All PDFs processed!")
+            time.sleep(1)
+            status_text.empty()
+            progress_bar.empty()
             
-            with col2:
-                # Delete button
-                if st.button("Delete Summary", key=f"delete_{item['id']}"):
-                    show_delete_confirmation(item['id'])
+            st.success(f"Successfully summarized {len(uploaded_files)} PDFs")
+            st.rerun()
+
+with tab2:
+    # Batch management
+    st.subheader("Batch Management")
     
-    # Export all summaries to a single text file
-    st.subheader("Batch Actions")
-    col1, col2 = st.columns(2)
+    # Get all batches
+    batches = db.get_all_batches()
+    
+    # Create columns for batch selection and actions
+    col1, col2 = st.columns([3, 1])
     
     with col1:
-        if st.button("Export All Summaries"):
-            all_summaries = ""
-            for item in summaries:
-                all_summaries += f"Filename: {item['filename']}\n"
-                all_summaries += f"ID: {item['id']}\n"
-                all_summaries += f"Timestamp: {item['timestamp']}\n"
-                if item['tags']:
-                    all_summaries += f"Tags: {item['tags']}\n"
-                all_summaries += f"Summary:\n{item['summary']}\n\n"
-                all_summaries += "-" * 80 + "\n\n"
-            
-            st.markdown(
-                get_text_download_link(
-                    all_summaries, 
-                    f"all_summaries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", 
-                    "Download All Summaries"
-                ),
-                unsafe_allow_html=True
-            )
+        # Batch selection
+        batch_options = {batch["id"]: f"{batch['name']} ({batch['summary_count']} summaries)" for batch in batches}
+        selected_batch = st.selectbox(
+            "Select Batch",
+            options=list(batch_options.keys()),
+            format_func=lambda x: batch_options[x],
+            index=list(batch_options.keys()).index(st.session_state.current_batch_id) if st.session_state.current_batch_id in batch_options else 0
+        )
+        
+        if selected_batch != st.session_state.current_batch_id:
+            set_current_batch(selected_batch)
     
-    # Clear all summaries
     with col2:
-        with st.expander("Delete All Summaries"):
-            st.warning("This action cannot be undone!")
-            if st.button("I understand, delete ALL summaries permanently"):
-                rows_deleted = db.delete_all_summaries()
-                st.success(f"Successfully deleted {rows_deleted} summaries!")
+        # Batch actions
+        col2a, col2b = st.columns(2)
+        with col2a:
+            if st.button("New Batch"):
+                toggle_create_batch()
+        
+        with col2b:
+            if st.button("Edit Batch"):
+                toggle_edit_batch(st.session_state.current_batch_id)
+    
+    # Create new batch form
+    if st.session_state.show_create_batch:
+        st.subheader("Create New Batch")
+        with st.form("create_batch_form_2"):
+            batch_name = st.text_input("Batch Name", placeholder="Enter a name for this batch", key="batch_name_2")
+            batch_description = st.text_area("Description (optional)", placeholder="Enter a description for this batch", key="batch_desc_2")
+            
+            submitted = st.form_submit_button("Create Batch")
+            if submitted and batch_name:
+                new_batch_id = db.create_batch(batch_name, batch_description)
+                st.session_state.current_batch_id = new_batch_id
+                st.session_state.show_create_batch = False
+                st.success(f"Created new batch: {batch_name}")
                 st.rerun()
-else:
-    st.info("No summaries found. Upload PDF files to get started.")
+    
+    # Edit batch form
+    if st.session_state.show_edit_batch and st.session_state.batch_to_edit:
+        # Get current batch details
+        current_batch = next((b for b in batches if b["id"] == st.session_state.batch_to_edit), None)
+        
+        if current_batch:
+            st.subheader(f"Edit Batch: {current_batch['name']}")
+            with st.form("edit_batch_form"):
+                batch_name = st.text_input("Batch Name", value=current_batch["name"])
+                batch_description = st.text_area("Description", value=current_batch["description"] or "")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    submitted = st.form_submit_button("Save Changes")
+                with col2:
+                    delete_batch = st.form_submit_button("Delete Batch", type="secondary")
+                with col3:
+                    cancel = st.form_submit_button("Cancel")
+                
+                if submitted and batch_name:
+                    db.update_batch(st.session_state.batch_to_edit, batch_name, batch_description)
+                    st.session_state.show_edit_batch = False
+                    st.success(f"Updated batch: {batch_name}")
+                    st.rerun()
+                
+                if delete_batch:
+                    # Prevent deleting last batch
+                    if len(batches) > 1:
+                        # Delete the batch
+                        db.delete_batch(st.session_state.batch_to_edit)
+                        # Set current batch to the first remaining batch
+                        remaining_batches = [b for b in batches if b["id"] != st.session_state.batch_to_edit]
+                        if remaining_batches:
+                            st.session_state.current_batch_id = remaining_batches[0]["id"]
+                        st.session_state.show_edit_batch = False
+                        st.success(f"Deleted batch: {current_batch['name']}")
+                        st.rerun()
+                    else:
+                        st.error("Cannot delete the only batch. Create another batch first.")
+                
+                if cancel:
+                    st.session_state.show_edit_batch = False
+                    st.rerun()
+    
+    # Show move summary dialog
+    if st.session_state.show_move_summary and st.session_state.summary_to_move:
+        st.subheader("Move Summary to Another Batch")
+        
+        # Get current summary details
+        summaries = db.get_all_summaries(batch_id=st.session_state.current_batch_id)
+        current_summary = next((s for s in summaries if s["id"] == st.session_state.summary_to_move), None)
+        
+        if current_summary:
+            st.info(f"Moving summary: {current_summary['filename']}")
+            
+            # Batch selection (exclude current batch)
+            target_batches = [b for b in batches if b["id"] != st.session_state.current_batch_id]
+            
+            if target_batches:
+                target_batch_options = {batch["id"]: batch["name"] for batch in target_batches}
+                target_batch = st.selectbox(
+                    "Select target batch",
+                    options=list(target_batch_options.keys()),
+                    format_func=lambda x: target_batch_options[x]
+                )
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Move Summary"):
+                        db.move_summary_to_batch(st.session_state.summary_to_move, target_batch)
+                        hide_move_summary_dialog()
+                        st.success(f"Moved summary to {target_batch_options[target_batch]}")
+                        st.rerun()
+                
+                with col2:
+                    if st.button("Cancel Move"):
+                        hide_move_summary_dialog()
+                        st.rerun()
+            else:
+                st.warning("No other batches available. Create a new batch first.")
+                if st.button("Cancel"):
+                    hide_move_summary_dialog()
+                    st.rerun()
+    
+    # Display current batch description
+    current_batch = next((b for b in batches if b["id"] == st.session_state.current_batch_id), None)
+    if current_batch and current_batch["description"]:
+        st.info(current_batch["description"])
+    
+    # Search and filter in current batch
+    st.subheader(f"Summaries in {current_batch['name'] if current_batch else 'Current Batch'}")
+    
+    # Search and sort controls
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        search_term = st.text_input("Search summaries", value=st.session_state.search_term, key="search_in_batch")
+        if search_term != st.session_state.search_term:
+            update_search(search_term)
+
+    with col2:
+        sort_options = {"timestamp": "Date", "filename": "Filename", "text_length": "PDF Size", "id": "ID"}
+        sort_by = st.selectbox("Sort by", options=list(sort_options.keys()), 
+                              format_func=lambda x: sort_options[x],
+                              index=list(sort_options.keys()).index(st.session_state.sort_by),
+                              key="sort_by_in_batch")
+        if sort_by != st.session_state.sort_by:
+            set_sort(sort_by, st.session_state.sort_order)
+
+    with col3:
+        sort_order = st.selectbox("Order", options=["DESC", "ASC"], 
+                                 format_func=lambda x: "Newest first" if x == "DESC" else "Oldest first",
+                                 index=0 if st.session_state.sort_order == "DESC" else 1,
+                                 key="sort_order_in_batch")
+        if sort_order != st.session_state.sort_order:
+            set_sort(st.session_state.sort_by, sort_order)
+    
+    # Get summaries from the current batch with sorting and filtering
+    summaries = db.get_all_summaries(
+        sort_by=st.session_state.sort_by,
+        sort_order=st.session_state.sort_order,
+        search_term=st.session_state.search_term,
+        batch_id=st.session_state.current_batch_id
+    )
+    
+    # Display delete confirmation dialog if needed
+    if st.session_state.show_delete_confirmation:
+        with st.container():
+            st.warning("Are you sure you want to delete this summary?")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Yes, delete it"):
+                    confirm_delete()
+            with col2:
+                if st.button("Cancel"):
+                    cancel_delete()
+    
+    # Display summaries
+    if summaries:
+        st.write(f"Found {len(summaries)} summaries")
+        
+        for item in summaries:
+            with st.expander(f"{item['filename']} - {item['timestamp']} (ID: {item['id']})"):
+                st.markdown(f"**Summary:**")
+                st.write(item['summary'])
+                
+                # Tags
+                tags = st.text_input("Tags (separate with commas)", 
+                                    value=item['tags'] if item['tags'] else "", 
+                                    key=f"tags_{item['id']}")
+                
+                if st.button("Update Tags", key=f"update_tags_{item['id']}"):
+                    update_tags(item['id'], tags)
+                
+                # Action buttons
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    # Download button
+                    st.markdown(
+                        get_text_download_link(
+                            item['summary'], 
+                            f"{item['filename'].replace('.pdf', '')}_summary.txt", 
+                            "Download Summary"
+                        ), 
+                        unsafe_allow_html=True
+                    )
+                
+                with col2:
+                    # Move to another batch button
+                    if len(batches) > 1:  # Only show if there are other batches
+                        if st.button("Move to Batch", key=f"move_{item['id']}"):
+                            show_move_summary_dialog(item['id'])
+                
+                with col3:
+                    # Delete button
+                    if st.button("Delete Summary", key=f"delete_{item['id']}"):
+                        show_delete_confirmation(item['id'])
+        
+        # Export all summaries in batch
+        st.subheader("Batch Actions")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("Export All Batch Summaries"):
+                all_summaries = ""
+                for item in summaries:
+                    all_summaries += f"Filename: {item['filename']}\n"
+                    all_summaries += f"ID: {item['id']}\n"
+                    all_summaries += f"Timestamp: {item['timestamp']}\n"
+                    if item['tags']:
+                        all_summaries += f"Tags: {item['tags']}\n"
+                    all_summaries += f"Summary:\n{item['summary']}\n\n"
+                    all_summaries += "-" * 80 + "\n\n"
+                
+                # Add batch info to filename
+                batch_name = current_batch['name'].replace(" ", "_") if current_batch else "batch"
+                
+                st.markdown(
+                    get_text_download_link(
+                        all_summaries, 
+                        f"{batch_name}_summaries_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", 
+                        "Download All Batch Summaries"
+                    ),
+                    unsafe_allow_html=True
+                )
+        
+        # Clear all summaries in batch
+        with col2:
+            with st.expander("Delete All Batch Summaries"):
+                st.warning("This action cannot be undone!")
+                if st.button("I understand, delete ALL summaries in this batch"):
+                    rows_deleted = db.delete_all_summaries(batch_id=st.session_state.current_batch_id)
+                    st.success(f"Successfully deleted {rows_deleted} summaries from this batch!")
+                    st.rerun()
+    else:
+        st.info("No summaries found in this batch. Upload PDF files to get started.")
 
 # Add some information in the sidebar
 with st.sidebar:
@@ -444,20 +783,36 @@ with st.sidebar:
     
     if st.session_state.include_visual_analysis:
         st.subheader("Visual Analysis Enabled")
-        st.write("The app will analyze images and visual elements in your PDFs using GPT-4V.")
-        st.write("This provides more comprehensive summaries but uses more tokens.")
+        st.write("The app will analyze images and visual elements in your PDFs using GPT-4o.")
+        st.write("This provides more comprehensive summaries with insights from both text and visuals.")
+    
+    st.subheader("Batch Management")
+    st.write("Organize your summaries into batches for better management.")
+    st.write("Each batch can contain multiple summaries and can be exported together.")
     
     st.subheader("Instructions")
     st.write("1. Enter your OpenAI API key")
     st.write("2. Upload PDF files (up to 100)")
-    st.write("3. Enable visual analysis if needed")
-    st.write("4. Click 'Summarize PDFs'")
-    st.write("5. View and download the summaries")
-    st.write("6. Sort, filter, and tag your summaries")
+    st.write("3. Write custom instructions for how you want the documents summarized")
+    st.write("4. Select a batch or create a new one to store the summaries")
+    st.write("5. Enable visual analysis if needed")
+    st.write("6. Click 'Summarize PDFs'")
+    st.write("7. Manage your summaries in the 'Manage Summaries' tab")
+    
+    st.subheader("Example Instructions")
+    st.markdown("""
+    - "Create bullet points of key takeaways"
+    - "Provide a detailed academic summary with methodology analysis"
+    - "Write a short executive summary focusing on business implications"
+    - "Summarize in 3 paragraphs with a focus on the main arguments"
+    - "Create a list of 5-7 important facts from the document"
+    """)
     
     st.subheader("Stats")
     all_summaries = db.get_all_summaries()
-    st.write(f"Summaries in database: {len(all_summaries)}")
+    all_batches = db.get_all_batches()
+    st.write(f"Total summaries: {len(all_summaries)}")
+    st.write(f"Total batches: {len(all_batches)}")
     
     # Show database location
     st.subheader("Database")
