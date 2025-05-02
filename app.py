@@ -90,7 +90,7 @@ if 'summary_to_delete' not in st.session_state:
 if 'include_visual_analysis' not in st.session_state:
     st.session_state.include_visual_analysis = False
 if 'custom_instructions' not in st.session_state:
-    st.session_state.custom_instructions = "Create a comprehensive summary covering main points and key details. Use a clear, concise style."
+    st.session_state.custom_instructions = "Add any specific extraction preferences or formatting requirements here."
 if 'current_batch_id' not in st.session_state:
     st.session_state.current_batch_id = 1
 if 'show_create_batch' not in st.session_state:
@@ -216,8 +216,22 @@ def summarize_text(text, api_key, images=None, include_visual=False, custom_inst
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
         
-        # Use custom instructions or default prompt
-        system_prompt = custom_instructions or "Create a comprehensive summary covering main points and key details."
+        # Meta-prompt to be used for all API calls
+        meta_prompt = """You are an expert information extractor tasked with analyzing the provided PDF document. Your goal is to meticulously extract all substantive information, key data points, concepts, arguments, conclusions, and factual statements presented within the document, mirroring the comprehensive understanding a human analyst would achieve after a careful reading. For documents with visuals, integrate visual information naturally into the summary rather than separately describing images. Use the visual elements to enhance understanding of concepts, data, and context
+
+Instructions:
+
+Comprehensive Content Extraction: Identify and capture the core message, main topics, supporting details, definitions, numerical data, findings, recommendations, and any other significant pieces of information.
+Focus on Information, Not Structure: Extract what is being communicated (the content and meaning). Do not describe the document's layout, formatting, or structure (e.g., do not mention headings, paragraphs, lists, page numbers, font styles, or explicitly state 'this is a table'). However, do extract the information contained within these structures (e.g., extract the data from a table, but don't say 'the following data is from a table').
+Synthesize and Avoid Redundancy: Present the extracted information concisely. If the same point or piece of data is mentioned multiple times in different ways or sections, capture the information only once in your output. Synthesize related points where appropriate to provide a clear and non-repetitive summary of the document's content.
+Accuracy and Completeness: Ensure the extracted information accurately reflects the source document. Strive for completeness regarding all unique, substantive points made in the PDF.
+Output Format: Present the extracted information in a clear, logical, and easily digestible format (e.g., bullet points, numbered lists, or concise paragraphs grouped by topic, as appropriate for the content)."""
+        
+        # Combine meta-prompt with any custom instructions
+        if custom_instructions and custom_instructions.strip():
+            system_prompt = f"{meta_prompt}\n\nAdditional instructions: {custom_instructions}"
+        else:
+            system_prompt = meta_prompt
         
         # Default max tokens
         max_tokens = 600
@@ -227,14 +241,14 @@ def summarize_text(text, api_key, images=None, include_visual=False, custom_inst
             try:
                 # Use GPT-4o model with vision capabilities
                 messages = [
-                    {"role": "system", "content": f"{system_prompt} For documents with visuals, integrate visual information naturally into the summary rather than separately describing images. Use the visual elements to enhance understanding of concepts, data, and context."}
+                    {"role": "system", "content": system_prompt}
                 ]
                 
                 # Add text content
                 messages.append({
                     "role": "user", 
                     "content": [
-                        {"type": "text", "text": f"Please create a summary of this document, treating visual elements as an integral part of the content. Do not describe images separately, but use them to enhance your understanding of the document. The text content is:\n\n{text}"}
+                        {"type": "text", "text": f"Please analyze this document, treating visual elements as an integral part of the content. The text content is:\n\n{text}"}
                     ]
                 })
                 
@@ -257,7 +271,7 @@ def summarize_text(text, api_key, images=None, include_visual=False, custom_inst
                 # Final instruction
                 messages.append({
                     "role": "user",
-                    "content": "Now, provide a summary that naturally integrates insights from both the text and visuals. Do not separately describe the images - instead, use them to enhance your understanding and create a more informed and contextual summary."
+                    "content": "Now, provide your comprehensive analysis that naturally integrates insights from both the text and visuals."
                 })
                 
                 # Call the API with vision capabilities
@@ -280,7 +294,7 @@ def summarize_text(text, api_key, images=None, include_visual=False, custom_inst
                     model="gpt-3.5-turbo",
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
+                        {"role": "user", "content": f"Please analyze the following document:\n\n{text}"}
                     ],
                     max_tokens=max_tokens
                 )
@@ -290,7 +304,7 @@ def summarize_text(text, api_key, images=None, include_visual=False, custom_inst
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Please summarize the following document:\n\n{text}"}
+                    {"role": "user", "content": f"Please analyze the following document:\n\n{text}"}
                 ],
                 max_tokens=max_tokens
             )
@@ -409,11 +423,11 @@ with tab1:
     with col1:
         # Custom instructions text area
         custom_instructions = st.text_area(
-            "Custom Summary Instructions", 
+            "Additional Instructions (Optional)", 
             value=st.session_state.custom_instructions,
             height=100,
-            help="Describe how you want the document to be summarized. For example: 'Create bullet points of key takeaways', 'Write an executive summary with business implications', etc.",
-            placeholder="Example: Create a concise summary with bullet points highlighting the main arguments and key data points."
+            help="Add any additional preferences for information extraction. These will be combined with our core extraction algorithm.",
+            placeholder="Example: Focus on financial data and exclude any marketing claims. Format the output as a numbered list."
         )
         if custom_instructions != st.session_state.custom_instructions:
             update_custom_instructions(custom_instructions)
