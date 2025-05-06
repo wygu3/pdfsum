@@ -482,45 +482,59 @@ with tab1:
                 st.warning("Maximum 100 files allowed. Processing only the first 100.")
                 uploaded_files = uploaded_files[:100]
             
-            for i, uploaded_file in enumerate(uploaded_files):
-                status_text.text(f"Processing {uploaded_file.name} ({i+1}/{len(uploaded_files)})")
+            # Process in batches of 25 (silently in the backend)
+            batch_size = 25
+            total_files = len(uploaded_files)
+            processed_count = 0
+            
+            # Split into batches of 25 files
+            for batch_idx in range(0, total_files, batch_size):
+                batch_end = min(batch_idx + batch_size, total_files)
+                current_batch = uploaded_files[batch_idx:batch_end]
                 
-                # Extract text from PDF
-                text = extract_text_from_pdf(uploaded_file)
-                
-                # If visual analysis is enabled, extract images from PDF
-                images = None
-                if st.session_state.include_visual_analysis:
-                    uploaded_file.seek(0)  # Reset file pointer
-                    status_text.text(f"Extracting images from {uploaded_file.name}...")
-                    try:
-                        images = extract_images_from_pdf(uploaded_file)
-                    except Exception as e:
-                        st.warning(f"Failed to extract images: {str(e)}. Continuing with text-only summarization.")
-                        images = None
-                
-                # Summarize text (and images if enabled)
-                status_text.text(f"Generating summary for {uploaded_file.name}...")
-                summary = summarize_text(
-                    text, 
-                    st.session_state.api_key, 
-                    images, 
-                    st.session_state.include_visual_analysis,
-                    st.session_state.custom_instructions
-                )
-                
-                # Save summary to database
-                db.save_summary_to_db(uploaded_file.name, len(text), summary, "", selected_batch)
-                
-                # Update progress
-                progress_bar.progress((i + 1) / len(uploaded_files))
-                
+                for i, uploaded_file in enumerate(current_batch):
+                    current_index = batch_idx + i
+                    status_text.text(f"Processing {uploaded_file.name} ({current_index+1}/{total_files})")
+                    
+                    # Extract text from PDF
+                    text = extract_text_from_pdf(uploaded_file)
+                    
+                    # If visual analysis is enabled, extract images from PDF
+                    images = None
+                    if st.session_state.include_visual_analysis:
+                        uploaded_file.seek(0)  # Reset file pointer
+                        status_text.text(f"Extracting images from {uploaded_file.name}...")
+                        try:
+                            images = extract_images_from_pdf(uploaded_file)
+                        except Exception as e:
+                            st.warning(f"Failed to extract images: {str(e)}. Continuing with text-only summarization.")
+                            images = None
+                    
+                    # Summarize text (and images if enabled)
+                    status_text.text(f"Generating summary for {uploaded_file.name}...")
+                    summary = summarize_text(
+                        text, 
+                        st.session_state.api_key, 
+                        images, 
+                        st.session_state.include_visual_analysis,
+                        st.session_state.custom_instructions
+                    )
+                    
+                    # Save summary to database
+                    db.save_summary_to_db(uploaded_file.name, len(text), summary, "", selected_batch)
+                    
+                    # Update processed count
+                    processed_count += 1
+                    
+                    # Update progress
+                    progress_bar.progress(processed_count / total_files)
+            
             status_text.text("All PDFs processed!")
             time.sleep(1)
             status_text.empty()
             progress_bar.empty()
             
-            st.success(f"Successfully summarized {len(uploaded_files)} PDFs")
+            st.success(f"Successfully summarized {processed_count} PDFs")
             st.rerun()
 
 with tab2:
